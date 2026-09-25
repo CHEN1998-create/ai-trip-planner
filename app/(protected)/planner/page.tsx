@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import SiteHeader from "@/components/SiteHeader";
 import ItineraryView from "@/components/ItineraryView";
@@ -39,7 +39,33 @@ export default function PlannerPage() {
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [step, setStep] = useState(0);
+  const [attempted, setAttempted] = useState(false);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  /** 根据起止日期实时计算天数（含首尾两天） */
+  const dayCount = useMemo(() => {
+    if (!startDate || !endDate) return 0;
+    const s = new Date(`${startDate}T00:00:00`).getTime();
+    const e = new Date(`${endDate}T00:00:00`).getTime();
+    if (Number.isNaN(s) || Number.isNaN(e)) return 0;
+    const diff = Math.round((e - s) / 86_400_000) + 1;
+    return diff > 0 ? diff : 0;
+  }, [startDate, endDate]);
+
+  // 表单校验规则（PRD 业务规则：必填 + 单目的地 + 3-7 天）
+  const errors = {
+    origin: origin.trim() ? "" : "请输入出发地",
+    destination: destination.trim() ? "" : "请输入目的地",
+    dates:
+      !startDate || !endDate
+        ? "请选择出行日期"
+        : dayCount < 1
+          ? "结束日期不能早于开始日期"
+          : dayCount < 3 || dayCount > 7
+            ? `行程天数需为 3-7 天（当前 ${dayCount} 天）`
+            : "",
+  };
+  const formValid = !errors.origin && !errors.destination && !errors.dates;
 
   const togglePref = (p: string) =>
     setPrefs((prev) =>
@@ -47,6 +73,11 @@ export default function PlannerPage() {
     );
 
   const startGeneration = () => {
+    if (!formValid) {
+      setAttempted(true);
+      return;
+    }
+    setAttempted(false);
     timers.current.forEach(clearTimeout);
     timers.current = [];
     setPhase("loading");
@@ -102,66 +133,122 @@ export default function PlannerPage() {
               {/* 路线 */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="field-label">
+                  <label htmlFor="fp-origin" className="field-label">
                     <span className="inline-flex items-center gap-1">
                       <MapPin width={12} height={12} /> 出发地
                     </span>
                   </label>
                   <input
-                    className="field-input"
+                    id="fp-origin"
+                    name="origin"
+                    className={`field-input ${
+                      attempted && errors.origin
+                        ? "border-rose-300 focus:border-rose-400 focus:ring-rose-100"
+                        : ""
+                    }`}
                     value={origin}
                     onChange={(e) => setOrigin(e.target.value)}
                     placeholder="上海"
                   />
+                  {attempted && errors.origin && (
+                    <p className="mt-1 text-[11px] text-rose-500">
+                      {errors.origin}
+                    </p>
+                  )}
                 </div>
                 <div>
-                  <label className="field-label">
+                  <label htmlFor="fp-destination" className="field-label">
                     <span className="inline-flex items-center gap-1">
                       <MapPin width={12} height={12} /> 目的地
                     </span>
                   </label>
                   <input
-                    className="field-input"
+                    id="fp-destination"
+                    name="destination"
+                    className={`field-input ${
+                      attempted && errors.destination
+                        ? "border-rose-300 focus:border-rose-400 focus:ring-rose-100"
+                        : ""
+                    }`}
                     value={destination}
                     onChange={(e) => setDestination(e.target.value)}
                     placeholder="成都"
                   />
+                  {attempted && errors.destination && (
+                    <p className="mt-1 text-[11px] text-rose-500">
+                      {errors.destination}
+                    </p>
+                  )}
                 </div>
               </div>
 
               {/* 日期 */}
               <div className="mt-4">
-                <label className="field-label">
+                <label htmlFor="fp-start" className="field-label">
                   <span className="inline-flex items-center gap-1">
                     <Calendar width={12} height={12} /> 出行日期（3-7 天）
                   </span>
                 </label>
                 <div className="flex items-center gap-2">
                   <input
+                    id="fp-start"
+                    name="startDate"
                     type="date"
-                    className="field-input"
+                    className={`field-input ${
+                      attempted && errors.dates
+                        ? "border-rose-300 focus:border-rose-400 focus:ring-rose-100"
+                        : ""
+                    }`}
                     value={startDate}
                     onChange={(e) => setStartDate(e.target.value)}
                   />
                   <span className="text-slate-400">~</span>
                   <input
+                    id="fp-end"
+                    name="endDate"
                     type="date"
-                    className="field-input"
+                    aria-label="结束日期"
+                    className={`field-input ${
+                      attempted && errors.dates
+                        ? "border-rose-300 focus:border-rose-400 focus:ring-rose-100"
+                        : ""
+                    }`}
                     value={endDate}
                     onChange={(e) => setEndDate(e.target.value)}
                   />
                 </div>
+                {/* 实时天数反馈：字段 → 状态 的可见闭环 */}
+                {dayCount > 0 ? (
+                  <p
+                    className={`mt-1.5 text-[11px] ${
+                      dayCount >= 3 && dayCount <= 7
+                        ? "text-emerald-600"
+                        : "text-rose-500"
+                    }`}
+                  >
+                    共 {dayCount} 天
+                    {dayCount >= 3 && dayCount <= 7
+                      ? "，符合 3-7 天要求"
+                      : "，行程天数需为 3-7 天"}
+                  </p>
+                ) : (
+                  <p className="mt-1.5 text-[11px] text-slate-400">
+                    请选择开始与结束日期
+                  </p>
+                )}
               </div>
 
               {/* 预算 */}
               <div className="mt-4">
-                <label className="field-label">
+                <label htmlFor="fp-budget" className="field-label">
                   <span className="inline-flex items-center gap-1">
                     <Wallet width={12} height={12} /> 人均预算
                   </span>
                 </label>
                 <div className="flex items-center gap-3">
                   <input
+                    id="fp-budget"
+                    name="budget"
                     type="range"
                     min={1000}
                     max={8000}
@@ -255,7 +342,7 @@ export default function PlannerPage() {
               <button
                 type="button"
                 onClick={startGeneration}
-                disabled={phase === "loading" || !destination}
+                disabled={phase === "loading"}
                 className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl gradient-brand py-3.5 text-sm font-semibold text-white shadow-lift transition hover:shadow-glow disabled:cursor-not-allowed disabled:opacity-70"
               >
                 {phase === "loading" ? (
@@ -270,6 +357,11 @@ export default function PlannerPage() {
                   </>
                 )}
               </button>
+              {attempted && !formValid && (
+                <p className="mt-2 text-center text-[11px] text-rose-500">
+                  请先修正表单中标红的问题，再发起规划
+                </p>
+              )}
               <p className="mt-2.5 text-center text-[11px] text-slate-400">
                 MVP 限制：单目的地 · 3-7 天 · 暂不联排多城市
               </p>
@@ -395,7 +487,7 @@ export default function PlannerPage() {
                     <div className="relative flex flex-wrap items-center justify-between gap-3">
                       <div>
                         <h3 className="text-xl font-bold">
-                          {destination} · {chengduTrip.dayCount} 日慢游
+                          {destination} · {dayCount} 日慢游
                         </h3>
                         <p className="mt-1 text-xs text-white/85">
                           {origin} 出发 · {startDate} ~ {endDate} · 节奏

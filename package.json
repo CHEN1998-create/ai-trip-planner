@@ -3,12 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "set \"NODE_USE_ENV_PROXY=1\"&& set \"HTTPS_PROXY=http://127.0.0.1:10808\"&& set \"HTTP_PROXY=http://127.0.0.1:10808\"&& set \"NO_PROXY=localhost,127.0.0.1\"&& next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
   },
   "dependencies": {
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.117.1",
     "next": "14.2.15",
     "react": "18.3.1",
     "react-dom": "18.3.1"
