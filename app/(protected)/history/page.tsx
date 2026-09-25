@@ -1,13 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import SiteHeader from "@/components/SiteHeader";
 import TripCard from "@/components/TripCard";
-import { historyTrips, type TripStatus } from "@/lib/mock";
+import { type Trip } from "@/lib/mock";
 import { Search, Sparkles, Layers, MapPin, Wallet } from "@/components/icons";
 
-type Filter = "all" | TripStatus;
+type Filter = "all" | Trip["status"];
 
 const tabs: { value: Filter; label: string }[] = [
   { value: "all", label: "全部" },
@@ -17,12 +18,59 @@ const tabs: { value: Filter; label: string }[] = [
   { value: "failed", label: "生成失败" },
 ];
 
+function StatCard({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: typeof Layers;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="card flex items-center gap-3 p-4">
+      <span className="grid h-10 w-10 place-items-center rounded-xl bg-brand-50 text-brand-600">
+        <Icon width={18} height={18} />
+      </span>
+      <div>
+        <p className="text-xs text-ink-mute">{label}</p>
+        <p className="text-sm font-bold">{value}</p>
+      </div>
+    </div>
+  );
+}
+
 export default function HistoryPage() {
+  const router = useRouter();
+  const [trips, setTrips] = useState<Trip[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [keyword, setKeyword] = useState("");
 
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/history").then(async (res) => {
+      if (res.status === 401) {
+        router.replace("/login?redirect=/history");
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!alive) return;
+      if (!res.ok) {
+        setError(data.error ?? "行程列表加载失败");
+        setTrips([]);
+        return;
+      }
+      setTrips(data.trips ?? []);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [router]);
+
   const list = useMemo(() => {
-    return historyTrips.filter((t) => {
+    if (!trips) return [];
+    return trips.filter((t) => {
       const matchTab = filter === "all" || t.status === filter;
       const kw = keyword.trim();
       const matchKw =
@@ -32,11 +80,13 @@ export default function HistoryPage() {
         t.preferences.some((p) => p.includes(kw));
       return matchTab && matchKw;
     });
-  }, [filter, keyword]);
+  }, [trips, filter, keyword]);
 
-  const totalBudget = historyTrips
-    .filter((t) => t.status !== "failed")
-    .reduce((sum, t) => sum + t.budget, 0);
+  const cityCount = trips
+    ? new Set(trips.map((t) => t.destination)).size
+    : 0;
+  const totalBudget =
+    trips?.filter((t) => t.status !== "failed").reduce((s, t) => s + t.budget, 0) ?? 0;
 
   return (
     <div className="min-h-screen">
@@ -65,21 +115,13 @@ export default function HistoryPage() {
 
         {/* 统计条 */}
         <div className="mt-6 grid grid-cols-3 gap-4">
-          {[
-            { icon: Layers, label: "累计行程", value: `${historyTrips.length} 份` },
-            { icon: MapPin, label: "去过 / 计划城市", value: "6 个" },
-            { icon: Wallet, label: "累计预算规划", value: `¥${totalBudget.toLocaleString()}` },
-          ].map((s) => (
-            <div key={s.label} className="card flex items-center gap-3 p-4">
-              <span className="grid h-10 w-10 place-items-center rounded-xl bg-brand-50 text-brand-600">
-                <s.icon width={18} height={18} />
-              </span>
-              <div>
-                <p className="text-xs text-ink-mute">{s.label}</p>
-                <p className="text-sm font-bold">{s.value}</p>
-              </div>
-            </div>
-          ))}
+          <StatCard icon={Layers} label="累计行程" value={trips ? `${trips.length} 份` : "—"} />
+          <StatCard icon={MapPin} label="计划城市" value={trips ? `${cityCount} 个` : "—"} />
+          <StatCard
+            icon={Wallet}
+            label="累计预算规划"
+            value={trips ? `¥${totalBudget.toLocaleString()}` : "—"}
+          />
         </div>
 
         {/* 搜索 + 筛选 */}
@@ -115,7 +157,13 @@ export default function HistoryPage() {
         </div>
 
         {/* 列表 */}
-        {list.length > 0 ? (
+        {trips === null ? (
+          <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="card h-64 animate-pulse bg-slate-100/60" />
+            ))}
+          </div>
+        ) : list.length > 0 ? (
           <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
             {list.map((trip) => (
               <TripCard key={trip.id} trip={trip} />
@@ -125,8 +173,20 @@ export default function HistoryPage() {
           <div className="card mt-6 grid place-items-center gap-3 p-16 text-center">
             <Search width={32} height={32} className="text-slate-300" />
             <p className="text-sm text-ink-mute">
-              没有匹配的行程，换个关键词或筛选条件试试。
+              {error
+                ? error
+                : filter === "failed"
+                ? "暂无失败任务。生成失败的任务会记录在管理后台的规划日志中。"
+                : "没有匹配的行程，换个关键词或筛选条件试试。"}
             </p>
+            {filter === "all" && trips.length === 0 && !error && (
+              <Link
+                href="/planner"
+                className="rounded-xl gradient-brand px-5 py-2.5 text-sm font-medium text-white"
+              >
+                去生成第一份行程
+              </Link>
+            )}
           </div>
         )}
       </main>

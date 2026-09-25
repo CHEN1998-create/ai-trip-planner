@@ -6,6 +6,7 @@ import { NextResponse } from "next/server";
 import { createClient, getCurrentUser } from "@/lib/supabase/server";
 import { runPlanner } from "@/lib/agent/run";
 import { dayDiff } from "@/lib/agent/prompt";
+import { saveTrip, logPlannerRun } from "@/lib/agent/persist";
 import type { Pace, PlanRequest, PlanResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -90,8 +91,6 @@ export async function POST(req: Request) {
 
   // 3) Agent 编排：调模型 → 解析（内部含重试与降级）
   const outcome = await runPlanner(input);
-  const runStatus =
-    outcome.status === "failed" ? "failed" : "success";
 
   // 4) 落库：trip_plans → itinerary_days → itinerary_items（失败时不建单）
   const supabase = await createClient();
@@ -99,82 +98,20 @@ export async function POST(req: Request) {
   let dbError: string | null = null;
 
   if (outcome.result) {
-    const { data: plan, error: planErr } = await supabase
-      .from("trip_plans")
-      .insert({
-        user_id: user.id,
-        origin: input.origin,
-        destination: input.destination,
-        start_date: input.startDate,
-        end_date: input.endDate,
-        budget: input.budget,
-        preferences: input.preferences,
-        pace: input.pace,
-        status: "saved",
-        tagline: outcome.result.tagline,
-        tips: outcome.result.tips,
-        budget_breakdown: outcome.result.budgetBreakdown,
-      })
-      .select("id")
-      .single();
-
-    if (planErr || !plan) {
-      dbError = `行程主表写入失败：${planErr?.message ?? "未知错误"}`;
-    } else {
-      tripId = plan.id;
-
-      const { data: insertedDays, error: daysErr } = await supabase
-        .from("itinerary_days")
-        .insert(
-          outcome.result.days.map((d) => ({
-            trip_plan_id: plan.id,
-            day_index: d.dayIndex,
-            title: d.title,
-            summary: d.summary,
-            day_budget: d.dayBudget,
-          }))
-        )
-        .select("id, day_index");
-
-      if (daysErr || !insertedDays) {
-        dbError = `行程按天表写入失败：${daysErr?.message ?? "未知错误"}`;
-      } else {
-        const itemRows = outcome.result.days.flatMap((d) => {
-          const dbDay = insertedDays.find((x) => x.day_index === d.dayIndex);
-          if (!dbDay) return [];
-          return d.items.map((it, idx) => ({
-            itinerary_day_id: dbDay.id as string,
-            start_time: it.time,
-            place_name: it.title,
-            category: it.category,
-            notes: it.note ?? null,
-            estimated_cost: it.cost ?? 0,
-            sort_index: idx,
-          }));
-        });
-        if (itemRows.length > 0) {
-          const { error: itemsErr } = await supabase
-            .from("itinerary_items")
-            .insert(itemRows);
-          if (itemsErr) {
-            dbError = `行程条目表写入失败：${itemsErr.message}`;
-          }
-        }
-      }
-    }
+    const saved = await saveTrip(supabase, user.id, input, outcome.result);
+    tripId = saved.tripId;
+    dbError = saved.error;
   }
 
   // 5) planner_runs 日志（成功/降级/失败均记录，供管理后台统计）
-  const { error: runLogErr } = await supabase.from("planner_runs").insert({
-    trip_plan_id: tripId,
-    provider: outcome.provider,
-    latency_ms: Math.min(outcome.latencyMs, 2_147_483_647),
-    status: runStatus,
-    error_message: outcome.degradedReason ?? outcome.error ?? dbError ?? null,
-  });
-  if (runLogErr) {
-    console.error("[planner] planner_runs 写入失败：", runLogErr.message);
-  }
+  await logPlannerRun(
+    supabase,
+    tripId,
+    outcome.provider,
+    outcome.latencyMs,
+    outcome.status === "failed" ? "failed" : "success",
+    outcome.degradedReason ?? outcome.error ?? dbError
+  );
 
   // 6) 组装响应
   if (outcome.status === "failed" || dbError) {

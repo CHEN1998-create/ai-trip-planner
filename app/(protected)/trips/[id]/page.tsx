@@ -1,9 +1,13 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
 import SiteHeader from "@/components/SiteHeader";
 import ItineraryView from "@/components/ItineraryView";
 import BudgetBreakdown from "@/components/BudgetBreakdown";
 import FeedbackCard from "@/components/FeedbackCard";
-import { getTrip, paceLabel, statusMeta, formatCNY } from "@/lib/mock";
+import { formatCNY, paceLabel, statusMeta, type Trip } from "@/lib/mock";
 import {
   ChevronRight,
   Calendar,
@@ -17,12 +21,111 @@ import {
   ShieldCheck,
 } from "@/components/icons";
 
-export default function TripDetailPage({
-  params,
-}: {
-  params: { id: string };
-}) {
-  const trip = getTrip(params.id);
+export default function TripDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const router = useRouter();
+  const [trip, setTrip] = useState<Trip | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenError, setRegenError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+
+  useEffect(() => {
+    if (!id) return;
+    let alive = true;
+    fetch(`/api/trips/${id}`).then(async (res) => {
+      if (res.status === 401) {
+        router.replace(`/login?redirect=/trips/${id}`);
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!alive) return;
+      if (!res.ok) {
+        setLoadError(data.error ?? "行程详情加载失败");
+        return;
+      }
+      setTrip(data.trip);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [id, router]);
+
+  async function handleRegenerate() {
+    if (regenerating || !id) return;
+    setRegenerating(true);
+    setRegenError(null);
+    try {
+      const res = await fetch(`/api/trips/${id}/regenerate`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.tripId) {
+        router.push(`/trips/${data.tripId}`);
+        return;
+      }
+      setRegenError(data.error ?? "重新生成失败，请稍后重试");
+    } catch {
+      setRegenError("网络异常，请稍后重试");
+    } finally {
+      setRegenerating(false);
+    }
+  }
+
+  async function handleExport() {
+    if (exporting || !id) return;
+    setExporting(true);
+    try {
+      const res = await fetch(`/api/trips/${id}/export`, { method: "POST" });
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${trip?.destination ?? "行程"}-${trip?.dayCount ?? ""}日行程.md`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setTrip((t) => (t ? { ...t, status: "exported" } : t));
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  // 加载中骨架
+  if (!trip && !loadError) {
+    return (
+      <div className="min-h-screen">
+        <SiteHeader />
+        <main className="mx-auto max-w-7xl space-y-4 px-4 py-8 sm:px-6 lg:px-8">
+          <div className="h-40 animate-pulse rounded-3xl bg-slate-100/70" />
+          <div className="grid gap-6 lg:grid-cols-3">
+            <div className="h-96 animate-pulse rounded-2xl bg-slate-100/70 lg:col-span-2" />
+            <div className="h-96 animate-pulse rounded-2xl bg-slate-100/70" />
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // 不存在 / 无权
+  if (!trip) {
+    return (
+      <div className="min-h-screen">
+        <SiteHeader />
+        <main className="mx-auto grid max-w-lg place-items-center px-4 py-28 text-center">
+          <AlertTriangle width={40} height={40} className="text-amber-400" />
+          <h1 className="mt-4 text-xl font-bold">{loadError ?? "行程不存在"}</h1>
+          <Link
+            href="/history"
+            className="mt-5 rounded-xl gradient-brand px-5 py-2.5 text-sm font-medium text-white"
+          >
+            返回行程库
+          </Link>
+        </main>
+      </div>
+    );
+  }
+
   const status = statusMeta[trip.status];
   const hasItinerary = Boolean(trip.itinerary?.length);
 
@@ -80,34 +183,45 @@ export default function TripDetailPage({
 
               <div className="mt-4 flex flex-wrap gap-1.5">
                 {trip.preferences.map((p) => (
-                  <span
-                    key={p}
-                    className="chip bg-white/20 text-white backdrop-blur"
-                  >
+                  <span key={p} className="chip bg-white/20 text-white backdrop-blur">
                     {p}
                   </span>
                 ))}
-                <span className="chip bg-black/20 text-white">
-                  {status.label}
-                </span>
+                <span className="chip bg-black/20 text-white">{status.label}</span>
               </div>
             </div>
 
             <div className="flex flex-col gap-2">
-              <button className="inline-flex items-center gap-1.5 rounded-xl bg-white/15 px-4 py-2.5 text-sm font-medium backdrop-blur transition hover:bg-white/25">
-                <Refresh width={15} height={15} />
-                重新生成
+              <button
+                onClick={handleRegenerate}
+                disabled={regenerating}
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-white/15 px-4 py-2.5 text-sm font-medium backdrop-blur transition hover:bg-white/25 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Refresh width={15} height={15} className={regenerating ? "animate-spin" : ""} />
+                {regenerating ? "Agent 生成中…" : "按原条件重新生成"}
               </button>
               <div className="flex gap-2">
-                <button className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-white px-4 py-2.5 text-sm font-medium text-brand-700 transition hover:bg-indigo-50">
+                <button
+                  onClick={handleExport}
+                  disabled={exporting}
+                  className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-white px-4 py-2.5 text-sm font-medium text-brand-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
                   <Download width={15} height={15} />
-                  PDF
+                  {exporting ? "导出中…" : "导出"}
                 </button>
-                <button className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-white/30 px-4 py-2.5 text-sm font-medium transition hover:bg-white/10">
+                <button
+                  onClick={handleExport}
+                  className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-white/30 px-4 py-2.5 text-sm font-medium transition hover:bg-white/10"
+                >
                   <FileText width={15} height={15} />
-                  文本
+                  Markdown
                 </button>
               </div>
+              {regenError && (
+                <p className="max-w-[220px] rounded-lg bg-rose-500/20 px-3 py-2 text-xs leading-5 text-white">
+                  {regenError}
+                </p>
+              )}
             </div>
           </div>
         </section>
@@ -117,12 +231,9 @@ export default function TripDetailPage({
           {/* 左：每日行程 */}
           <div className="lg:col-span-2">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-bold tracking-tight">
-                Day by Day 行程
-              </h2>
+              <h2 className="text-lg font-bold tracking-tight">Day by Day 行程</h2>
               <span className="text-xs text-ink-mute">
-                共 {trip.itinerary?.reduce((n, d) => n + d.items.length, 0) ?? 0}{" "}
-                个安排
+                共 {trip.itinerary?.reduce((n, d) => n + d.items.length, 0) ?? 0} 个安排
               </span>
             </div>
 
@@ -132,16 +243,16 @@ export default function TripDetailPage({
               <div className="card grid place-items-center gap-3 p-12 text-center">
                 <AlertTriangle width={36} height={36} className="text-amber-400" />
                 <div>
-                  <p className="font-semibold">
-                    {trip.status === "failed"
-                      ? "该行程生成失败"
-                      : "该草稿尚未生成完整行程"}
-                  </p>
+                  <p className="font-semibold">该行程暂无明细数据</p>
                   <p className="mt-1 text-sm text-ink-mute">
-                    使用原始需求重新运行 Agent，失败任务会在管理后台留痕。
+                    可使用原始需求重新运行 Agent，生成结果会另存为新行程。
                   </p>
                 </div>
-                <button className="mt-2 inline-flex items-center gap-1.5 rounded-xl gradient-brand px-5 py-2.5 text-sm font-medium text-white">
+                <button
+                  onClick={handleRegenerate}
+                  disabled={regenerating}
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-xl gradient-brand px-5 py-2.5 text-sm font-medium text-white disabled:opacity-60"
+                >
                   <Refresh width={15} height={15} />
                   重新生成
                 </button>
@@ -151,20 +262,17 @@ export default function TripDetailPage({
 
           {/* 右：预算 / 贴士 / 反馈 */}
           <aside className="space-y-5 self-start lg:sticky lg:top-20">
-            {trip.budgetBreakdown && (
+            {trip.budgetBreakdown && trip.budgetBreakdown.length > 0 && (
               <div className="card p-5">
                 <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold">
                   <Wallet width={16} height={16} className="text-brand-500" />
                   预算拆分
                 </h3>
-                <BudgetBreakdown
-                  slices={trip.budgetBreakdown}
-                  total={trip.budget}
-                />
+                <BudgetBreakdown slices={trip.budgetBreakdown} total={trip.budget} />
               </div>
             )}
 
-            {trip.tips && (
+            {trip.tips && trip.tips.length > 0 && (
               <div className="card p-5">
                 <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold">
                   <ShieldCheck width={16} height={16} className="text-emerald-500" />
@@ -181,7 +289,7 @@ export default function TripDetailPage({
               </div>
             )}
 
-            <FeedbackCard />
+            <FeedbackCard tripId={trip.id} />
           </aside>
         </div>
       </main>

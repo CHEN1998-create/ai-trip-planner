@@ -86,6 +86,46 @@ export interface PlanResponse {
   error?: string;
 }
 
+/* ---------------- 管理后台聚合数据（admin_dashboard RPC 返回） ---------------- */
+
+export interface AdminMetrics {
+  totalRuns: number;
+  successRuns: number;
+  failedRuns: number;
+  avgLatencyMs: number;
+  todayRuns: number;
+  exportCount: number;
+  totalTrips: number;
+}
+
+export interface AdminRunRow {
+  id: string;
+  destination: string | null;
+  provider: string | null;
+  latency_ms: number | null;
+  status: "success" | "failed";
+  error_message: string | null;
+  created_at: string;
+}
+
+export interface AdminFeedbackRow {
+  id: string;
+  destination: string;
+  user: string;
+  score: number;
+  comment: string | null;
+  created_at: string;
+}
+
+export interface AdminDashboardData {
+  windowDays: number;
+  metrics: AdminMetrics;
+  hotDestinations: { name: string; count: number }[];
+  ratingDistribution: { star: number; count: number }[];
+  runs: AdminRunRow[];
+  feedback: AdminFeedbackRow[];
+}
+
 /* ---------------- 预算拆分配色（前端映射，避免 LLM 输出 Tailwind 类名） ---------------- */
 
 const BUDGET_COLORS: Record<string, { barClass: string; textClass: string }> = {
