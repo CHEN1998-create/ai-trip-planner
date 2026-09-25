@@ -1,54 +1,27 @@
 /**
- * Mock 数据层 —— 前端骨架阶段使用，后续替换为真实 API。
- * 对应 PRD 数据表：trip_plans / itinerary_days / itinerary_items / planner_runs / trip_feedback
+ * Mock 数据层 —— 前端骨架阶段使用。
+ * 领域类型统一定义在 lib/types.ts，此处 re-export 保持既有引用路径兼容。
  */
 
-export type TripStatus = "saved" | "draft" | "exported" | "failed";
-export type Pace = "relaxed" | "standard" | "compact";
+import type {
+  BudgetSlice,
+  ItineraryDay,
+  ItemCategory,
+  ItineraryItem,
+  Pace,
+  Trip,
+  TripStatus,
+} from "@/lib/types";
 
-export interface ItineraryItem {
-  time: string;
-  title: string;
-  category: "交通" | "美食" | "景点" | "文化" | "休闲" | "住宿";
-  cost?: number;
-  note?: string;
-}
-
-export interface ItineraryDay {
-  dayIndex: number;
-  title: string;
-  summary: string;
-  dayBudget: number;
-  items: ItineraryItem[];
-}
-
-export interface BudgetSlice {
-  category: string;
-  amount: number;
-  /** Tailwind 颜色类（完整类名字符串，供 JIT 扫描） */
-  barClass: string;
-  textClass: string;
-}
-
-export interface Trip {
-  id: string;
-  origin: string;
-  destination: string;
-  tagline: string;
-  startDate: string;
-  endDate: string;
-  dayCount: number;
-  budget: number;
-  preferences: string[];
-  pace: Pace;
-  status: TripStatus;
-  cover: string; // 渐变类名
-  emoji: string;
-  createdAt: string;
-  itinerary?: ItineraryDay[];
-  budgetBreakdown?: BudgetSlice[];
-  tips?: string[];
-}
+export type {
+  BudgetSlice,
+  ItineraryDay,
+  ItemCategory,
+  ItineraryItem,
+  Pace,
+  Trip,
+  TripStatus,
+};
 
 export const paceOptions: { value: Pace; label: string; desc: string }[] = [
   { value: "relaxed", label: "轻松", desc: "每天 2-3 个点，留白充足" },

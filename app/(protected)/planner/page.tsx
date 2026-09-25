@@ -1,13 +1,15 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import SiteHeader from "@/components/SiteHeader";
 import ItineraryView from "@/components/ItineraryView";
+import BudgetBreakdown from "@/components/BudgetBreakdown";
+import { toBudgetSlices, coverFor, type PlanResponse } from "@/lib/types";
 import {
-  chengduTrip,
   preferenceOptions,
   paceOptions,
+  paceLabel,
   formatCNY,
   type Pace,
 } from "@/lib/mock";
@@ -18,17 +20,20 @@ import {
   Wallet,
   Check,
   CheckCircle,
-  ArrowRight,
   Refresh,
   Route,
   Loading,
+  AlertTriangle,
+  Zap,
+  FileText,
 } from "@/components/icons";
 
 const STEPS = ["解析旅行需求", "检索目的地 POI", "编排每日行程", "核算预算拆分"];
 
-type Phase = "idle" | "loading" | "done";
+type Phase = "idle" | "loading" | "done" | "failed";
 
 export default function PlannerPage() {
+  const router = useRouter();
   const [origin, setOrigin] = useState("上海");
   const [destination, setDestination] = useState("成都");
   const [startDate, setStartDate] = useState("2026-05-01");
@@ -40,6 +45,8 @@ export default function PlannerPage() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [step, setStep] = useState(0);
   const [attempted, setAttempted] = useState(false);
+  const [apiError, setApiError] = useState("");
+  const [plan, setPlan] = useState<PlanResponse | null>(null);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   /** 根据起止日期实时计算天数（含首尾两天） */
@@ -72,7 +79,20 @@ export default function PlannerPage() {
       prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]
     );
 
-  const startGeneration = () => {
+  /** 真实结果统计：实际预估总额（各日预算之和）与预算拆分总额 */
+  const actualTotal = useMemo(
+    () =>
+      plan?.result?.days.reduce((sum, d) => sum + d.dayBudget, 0) ?? 0,
+    [plan]
+  );
+  const breakdownTotal = useMemo(
+    () =>
+      plan?.result?.budgetBreakdown.reduce((sum, b) => sum + b.amount, 0) ?? 0,
+    [plan]
+  );
+
+  /** 发起真实规划：POST /api/trips/plan（Agent 编排链路） */
+  const startGeneration = async () => {
     if (!formValid) {
       setAttempted(true);
       return;
@@ -82,13 +102,52 @@ export default function PlannerPage() {
     timers.current = [];
     setPhase("loading");
     setStep(0);
+    setApiError("");
+
+    // 接口无阶段事件，前端按预期耗时推进进度（停在最后一步直至响应）
     STEPS.forEach((_, i) => {
-      const t = setTimeout(() => {
-        if (i < STEPS.length - 1) setStep(i + 1);
-        else setPhase("done");
-      }, 800 * (i + 1));
+      const t = setTimeout(
+        () => setStep(Math.min(i + 1, STEPS.length - 1)),
+        1600 * (i + 1)
+      );
       timers.current.push(t);
     });
+
+    try {
+      const res = await fetch("/api/trips/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          origin,
+          destination,
+          startDate,
+          endDate,
+          budget,
+          preferences: prefs,
+          pace,
+        }),
+      });
+
+      if (res.status === 401) {
+        router.push(`/login?redirect=${encodeURIComponent("/planner")}`);
+        return;
+      }
+
+      const data: PlanResponse = await res.json();
+      if (data.status === "failed" || !data.result) {
+        setApiError(data.error ?? "规划任务失败，请重试");
+        setPhase("failed");
+      } else {
+        setPlan(data);
+        setPhase("done");
+      }
+    } catch {
+      setApiError("网络异常，请求未送达，请检查网络后重试");
+      setPhase("failed");
+    } finally {
+      timers.current.forEach(clearTimeout);
+      timers.current = [];
+    }
   };
 
   const requestPayload = JSON.stringify(
@@ -118,11 +177,11 @@ export default function PlannerPage() {
               AI 行程规划台
             </h1>
             <p className="mt-1 text-sm text-ink-mute">
-              左侧描述需求，右侧实时预览 Agent 编排结果（当前为 Mock 数据）
+              左侧描述需求，右侧实时预览 Agent 编排结果
             </p>
           </div>
-          <span className="chip bg-amber-50 text-amber-600">
-            POST /api/trips/plan · 模拟
+          <span className="chip bg-brand-50 text-brand-600">
+            POST /api/trips/plan · DeepSeek
           </span>
         </div>
 
@@ -380,10 +439,25 @@ export default function PlannerPage() {
                   生成结果预览 · app:/planner
                 </span>
               </div>
-              {phase === "done" && (
-                <span className="chip bg-emerald-50 text-emerald-600">
-                  <CheckCircle width={12} height={12} />
-                  结构化 JSON 生成成功
+              {phase === "done" && plan && (
+                <span
+                  className={`chip ${
+                    plan.status === "degraded"
+                      ? "bg-amber-50 text-amber-600"
+                      : "bg-emerald-50 text-emerald-600"
+                  }`}
+                >
+                  {plan.status === "degraded" ? (
+                    <>
+                      <AlertTriangle width={12} height={12} />
+                      降级模板数据
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle width={12} height={12} />
+                      结构化 JSON 生成成功
+                    </>
+                  )}
                 </span>
               )}
             </div>
@@ -478,29 +552,83 @@ export default function PlannerPage() {
                 </div>
               )}
 
-              {/* ---- 生成完成 ---- */}
-              {phase === "done" && (
+              {/* ---- 生成失败：提供重新生成入口（PRD 硬性要求） ---- */}
+              {phase === "failed" && (
+                <div className="grid min-h-[560px] place-items-center">
+                  <div className="w-full max-w-md text-center">
+                    <div className="mx-auto grid h-20 w-20 place-items-center rounded-3xl bg-rose-50">
+                      <AlertTriangle width={32} height={32} className="text-rose-500" />
+                    </div>
+                    <h3 className="mt-5 text-lg font-semibold">
+                      规划任务失败
+                    </h3>
+                    <p className="mx-auto mt-2 rounded-xl bg-rose-50/80 px-4 py-3 text-sm leading-6 text-rose-600">
+                      {apiError}
+                    </p>
+                    <p className="mt-2 text-xs text-ink-mute">
+                      本次失败已记录到 planner_runs 日志，可在管理后台追溯
+                    </p>
+                    <button
+                      type="button"
+                      onClick={startGeneration}
+                      className="mx-auto mt-6 flex items-center justify-center gap-2 rounded-xl gradient-brand px-6 py-3 text-sm font-semibold text-white shadow-lift transition hover:shadow-glow"
+                    >
+                      <Refresh width={16} height={16} />
+                      重新生成
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ---- 生成完成：真实结构化数据 ---- */}
+              {phase === "done" && plan?.result && (
                 <div className="animate-fade-up">
-                  {/* 结果摘要 */}
-                  <div className={`relative overflow-hidden rounded-2xl bg-gradient-to-br ${chengduTrip.cover} p-5 text-white`}>
+                  {/* 降级提示条 */}
+                  {plan.status === "degraded" && plan.degradedReason && (
+                    <div className="mb-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-700">
+                      <AlertTriangle
+                        width={14}
+                        height={14}
+                        className="mt-0.5 shrink-0"
+                      />
+                      {plan.degradedReason}
+                    </div>
+                  )}
+
+                  {/* 结果摘要卡 */}
+                  <div
+                    className={`relative overflow-hidden rounded-2xl bg-gradient-to-br ${coverFor(
+                      plan.request.destination
+                    )} p-5 text-white`}
+                  >
                     <div className="hero-grid absolute inset-0 opacity-50" />
                     <div className="relative flex flex-wrap items-center justify-between gap-3">
                       <div>
                         <h3 className="text-xl font-bold">
-                          {destination} · {dayCount} 日慢游
+                          {plan.request.destination} · {plan.result.days.length}{" "}
+                          日行程
                         </h3>
                         <p className="mt-1 text-xs text-white/85">
-                          {origin} 出发 · {startDate} ~ {endDate} · 节奏
-                          {paceOptions.find((p) => p.value === pace)?.label}
+                          {plan.result.tagline}
+                        </p>
+                        <p className="mt-1 text-[11px] text-white/75">
+                          {plan.request.origin} 出发 ·{" "}
+                          {plan.request.startDate} ~ {plan.request.endDate} ·
+                          节奏{paceLabel[plan.request.pace]}
                         </p>
                       </div>
                       <div className="text-right">
                         <p className="text-[11px] text-white/80">预估总预算</p>
-                        <p className="text-2xl font-bold">{formatCNY(budget)}</p>
+                        <p className="text-2xl font-bold">
+                          {formatCNY(actualTotal)}
+                        </p>
+                        <p className="text-[11px] text-white/75">
+                          输入预算 {formatCNY(plan.request.budget)}
+                        </p>
                       </div>
                     </div>
                     <div className="relative mt-3 flex flex-wrap gap-1.5">
-                      {prefs.map((p) => (
+                      {plan.request.preferences.map((p) => (
                         <span
                           key={p}
                           className="chip bg-white/20 text-white backdrop-blur"
@@ -511,33 +639,35 @@ export default function PlannerPage() {
                     </div>
                   </div>
 
-                  {/* 操作 */}
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    <Link
-                      href="/trips/trip-chengdu"
-                      className="inline-flex items-center gap-1.5 rounded-xl gradient-brand px-4 py-2.5 text-sm font-medium text-white shadow-lift"
-                    >
-                      查看完整详情
-                      <ArrowRight width={15} height={15} />
-                    </Link>
+                  {/* 状态与操作 */}
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    {plan.tripId ? (
+                      <span className="chip bg-emerald-50 text-emerald-600">
+                        <CheckCircle width={12} height={12} />
+                        已自动保存到行程库
+                      </span>
+                    ) : (
+                      <span className="chip bg-rose-50 text-rose-500">
+                        <AlertTriangle width={12} height={12} />
+                        未能保存到行程库
+                      </span>
+                    )}
+                    <span className="chip bg-slate-100 text-ink-soft">
+                      <Zap width={12} height={12} />
+                      {plan.provider} · {(plan.latencyMs / 1000).toFixed(1)}s
+                    </span>
                     <button
                       type="button"
                       onClick={startGeneration}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-ink-soft transition hover:bg-slate-50"
+                      className="ml-auto inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-ink-soft transition hover:bg-slate-50"
                     >
                       <Refresh width={15} height={15} />
                       换一版
                     </button>
-                    <button
-                      type="button"
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-ink-soft transition hover:bg-slate-50"
-                    >
-                      保存到行程库
-                    </button>
                   </div>
 
                   {/* 请求体预览 */}
-                  <details className="mt-4 rounded-xl border border-slate-200 bg-slate-900" open>
+                  <details className="mt-4 rounded-xl border border-slate-200 bg-slate-900">
                     <summary className="cursor-pointer select-none px-4 py-2.5 text-xs font-medium text-slate-300">
                       POST /api/trips/plan · 请求体
                     </summary>
@@ -546,14 +676,61 @@ export default function PlannerPage() {
                     </pre>
                   </details>
 
-                  {/* Day by Day 预览（紧凑） */}
-                  <h4 className="mb-4 mt-6 text-sm font-semibold text-ink-soft">
+                  {/* Day by Day 行程 */}
+                  <h4 className="mb-4 mt-6 flex items-center gap-1.5 text-sm font-semibold text-ink-soft">
+                    <Route width={15} height={15} className="text-brand-500" />
                     Day by Day 行程
                   </h4>
-                  <ItineraryView
-                    days={chengduTrip.itinerary!}
-                    compact
-                  />
+                  <ItineraryView days={plan.result.days} compact />
+
+                  {/* 预算拆分 */}
+                  {plan.result.budgetBreakdown.length > 0 && (
+                    <>
+                      <h4 className="mb-4 mt-8 flex items-center gap-1.5 text-sm font-semibold text-ink-soft">
+                        <Wallet
+                          width={15}
+                          height={15}
+                          className="text-brand-500"
+                        />
+                        预算拆分
+                      </h4>
+                      <div className="card p-5">
+                        <BudgetBreakdown
+                          slices={toBudgetSlices(plan.result.budgetBreakdown)}
+                          total={breakdownTotal || actualTotal || 1}
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  {/* 建议 */}
+                  {plan.result.tips.length > 0 && (
+                    <>
+                      <h4 className="mb-4 mt-8 flex items-center gap-1.5 text-sm font-semibold text-ink-soft">
+                        <FileText
+                          width={15}
+                          height={15}
+                          className="text-brand-500"
+                        />
+                        出行建议
+                      </h4>
+                      <ul className="space-y-2.5">
+                        {plan.result.tips.map((tip, i) => (
+                          <li
+                            key={i}
+                            className="flex items-start gap-3 rounded-xl border border-slate-100 bg-slate-50/60 px-4 py-3"
+                          >
+                            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-brand-100 text-[11px] font-bold text-brand-600">
+                              {i + 1}
+                            </span>
+                            <span className="text-sm leading-6 text-ink-soft">
+                              {tip}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
                 </div>
               )}
             </div>
